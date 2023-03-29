@@ -24,6 +24,8 @@ const Vec3 = SVector{3, Float64}
 const Mat3 = SMatrix{3, 3, Float64}
 const Vec3List = AbstractArray{Vec3}
 
+const c = 299_792_458 # m/s
+
 # copy
 # component(vecs::Vec3List, i) = [v[i] for v in vecs]
 # view
@@ -187,9 +189,9 @@ function look1d(x, nl)
 end
 
 # use hamming window to de-spckle. No decimation
-function hamming_despeckle(z::AbstractArray{Complex{T},2}, nl) where {T}
+function hamming_despeckle(z::Matrix{Complex}, nl::Integer)
     nr, ns = size(z)
-    zout = zeros(T, nr, ns)
+    zout = zeros(Float64, nr, ns)
     for i=1:nr
         zout[i,:] = imfilter(abs2.(z[i,:]),hamming(nl))
     end
@@ -212,8 +214,8 @@ function backproject_stripmap_sch(itp, z, r0, dr, kω, href, beamwidth, x_bp::Ve
     #compute the s coordinate in the center between tx-rx for each pulse
     s_pulse = (getx(x_tx) .+ getx(x_rx)) ./ 2
     Threads.@threads for i in eachindex(x_bp)
-        s, c, h = x_bp[i]
-        range_zerodop = sqrt(c^2 + (href - h)^2)
+        s, cross_t, h = x_bp[i]
+        range_zerodop = sqrt(cross_t^2 + (href - h)^2)
         synth_aperture_size = range_zerodop * beamwidth
         s_start = s - synth_aperture_size / 2
         s_stop =  s + synth_aperture_size / 2
@@ -229,21 +231,27 @@ function backproject_stripmap_sch(itp, z, r0, dr, kω, href, beamwidth, x_bp::Ve
     return out
 end
 
-function TDBP_wavenumber(itp, z, r0, dR, kω, az_res, k_0, x_bp::Vec3List, x_tx::Vec3List, x_rx::Vec3List)
+function TDBP_wavenumber(itp, z, R0, dR, λ, az_res, squint_ang, x_bp::Vec3List, x_tx::Vec3List, x_rx::Vec3List)
     npulse = size(z,2)
-    @assert npulse == length(x_tx) == length(x_rx)
+    @assert npulse == length(x_tx) == length(x_rx) "Slow time length not matching"
     out = zeros(eltype(z), size(x_bp))
     Δk =  2π / az_res
+    k_0 = 2 * sin(squint_ang) * 2π/λ
     Threads.@threads for i in eachindex(x_bp)
-        s,c,h = x_bp[i]
-
         @inbounds for j in 1:npulse
-            R = (norm(x_bp[i] - x_tx[j]) + norm(x_bp[i] - x_rx[j])) / 2
-            sinψ = (s - (x_tx[j][1] + x_rx[j][1]) ./2) ./ R
-            k = sinψ * kω 
-            Wn = gaussActivFunc(k .- k_0,Δk/2)
-            iR =  (R - r0) /dR
-            out[i] = Wn * interp(itp,@view(z[:,j]),iR) * cis(kω * R)
+            Rtx = norm(x_bp[i] - x_tx[j]) 
+            Rrx = norm(x_bp[i] - x_rx[j])
+
+            # get ψ angle of the planar
+            sinψtx = (x_tx[j][1] - x_bp[i][1]) / Rtx
+            sinψrx = (x_rx[j][1] - x_bp[i][1]) / Rrx
+            k = (sinψtx +sinψrx) * 2π/λ 
+            Wn = gaussActivFunc(k - k_0, Δk/2)
+            if Wn <= .1
+                continue
+            end
+            iR =  ((Rtx + Rrx)/2 - R0) /dR
+            out[i] += Wn * interp(itp,@view(z[:,j]),iR) * cis(2π * (Rtx+Rrx)/λ  )
         end
     end
     return out
