@@ -111,7 +111,7 @@ end
 
 # interpolated
 function find_peak_near(t, z::AbstractVector{Complex{T}}, itp; window=30) where {T}
-    k, zk = find_peak_near(t, z; window=window)
+    k, zk = find_peak_near(t, z; window=window) # get nearest neighbor without interp
     t0 = k - window / 2
     t1 = t0 + window
     f(t) = -abs2(interp(itp, z, t))
@@ -124,8 +124,8 @@ function compute_roff_shift(cr_shifts,nbins)
     bins = range(minimum(cr_shifts),stop=maximum(cr_shifts),length=nbins)
     hist = StatsBase.fit(Histogram,cr_shifts,bins)
     idx = argmax(hist.weights)
-    r_off = (hist.edges[1][idx] + hist.edges[1][idx+1])/2
-    return r_off , hist
+    r_off_mode = (hist.edges[1][idx] + hist.edges[1][idx+1])/2
+    return r_off_mode , hist
 end
 
 function wrap(phase)
@@ -189,7 +189,7 @@ function look1d(x, nl)
 end
 
 # use hamming window to de-spckle. No decimation
-function hamming_despeckle(z::Matrix{Complex}, nl::Integer)
+function hamming_despeckle(z::Matrix{T}, nl::Integer, skipEqualize = false) where T <: Complex
     nr, ns = size(z)
     zout = zeros(Float64, nr, ns)
     for i=1:nr
@@ -197,6 +197,9 @@ function hamming_despeckle(z::Matrix{Complex}, nl::Integer)
     end
     zout ./= nl 
     zout = pow2db.(zout)
+    if skipEqualize
+        return zout
+    end
     return zout .- maximum(zout)
 end
 
@@ -223,7 +226,7 @@ function backproject_stripmap_sch(itp, z, r0, dr, kω, href, beamwidth, x_bp::Ve
             # using a rectangle to limit the beamwidth, so the wavenumber bandwidth
             if s_start <= s_pulse[j] <= s_stop
                 r = (norm(x_bp[i] - x_tx[j]) + norm(x_bp[i] - x_rx[j])) / 2
-                ir = (r - r0) / dr
+                ir = 1 + (r - r0) / dr
                 out[i] += cis(kω * (r - range_zerodop)) * interp(itp, @view(z[:,j]), ir)
             end
         end
@@ -250,9 +253,20 @@ function TDBP_wavenumber(itp, z, R0, dR, λ, az_res, squint_ang, x_bp::Vec3List,
             if Wn <= .1
                 continue
             end
-            iR =  ((Rtx + Rrx)/2 - R0) /dR
+            iR =  1 + ((Rtx + Rrx)/2 - R0) /dR
             out[i] += Wn * interp(itp,@view(z[:,j]),iR) * cis(2π * (Rtx+Rrx)/λ  )
         end
     end
     return out
+end
+
+function findMaxPow(multi_squint::Array{Complex, 3})
+    maxV = -Inf
+    for i in 1:size(multi_squint,3)
+        tempM = maximum(abs2.(multi_squint[:,:,i]))
+        if tempM > maxV
+            maxV = tempM
+        end
+    end
+    return maxV
 end
